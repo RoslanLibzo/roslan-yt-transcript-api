@@ -1,4 +1,6 @@
-import { YouTubeTranscriptApi, GenericProxyConfig } from "yt-transcript-api";
+import { YouTubeTranscriptApi } from "yt-transcript-api";
+import axios from "axios";
+import { HttpsProxyAgent } from "https-proxy-agent";
 
 // --- Simple in-memory rate limiter ---
 // Note: This works within a single serverless instance. Each cold start
@@ -75,19 +77,26 @@ export default async function handler(req, res) {
 
   try {
     // Use a proxy if configured (required for cloud deployments like Vercel
-    // because YouTube blocks datacenter IPs)
+    // because YouTube blocks datacenter IPs).
+    // We pass a custom axios httpClient with the proxy agent because the
+    // package's built-in proxy support is not fully implemented.
     const apiOptions = {};
     if (process.env.PROXY_URL) {
-      apiOptions.proxy = new GenericProxyConfig(process.env.PROXY_URL);
+      const agent = new HttpsProxyAgent(process.env.PROXY_URL);
+      apiOptions.httpClient = axios.create({
+        httpAgent: agent,
+        httpsAgent: agent,
+      });
     }
 
     const api = new YouTubeTranscriptApi(apiOptions);
     const transcript = await api.fetch(videoId, ["en"]);
 
-    // Extract the snippet objects from the transcript
-    const snippets = transcript.snippets.map((s) => ({
+    // FetchedTranscript extends Array — each element is a snippet
+    // with { text, start, duration }
+    const snippets = transcript.map((s) => ({
       text: s.text,
-      offset: s.start,
+      start: s.start,
       duration: s.duration,
     }));
 
