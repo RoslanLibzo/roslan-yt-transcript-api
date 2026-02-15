@@ -1,4 +1,4 @@
-import { YoutubeTranscript } from "youtube-transcript";
+import { YouTubeTranscriptApi } from "yt-transcript-api";
 
 // --- Simple in-memory rate limiter ---
 // Note: This works within a single serverless instance. Each cold start
@@ -74,9 +74,21 @@ export default async function handler(req, res) {
   }
 
   try {
-    const transcript = await YoutubeTranscript.fetchTranscript(videoId);
-    return res.status(200).json({ transcript });
+    const api = new YouTubeTranscriptApi();
+    const transcript = await api.fetch(videoId, ["en"]);
+
+    // Extract the snippet objects from the transcript
+    const snippets = transcript.snippets.map((s) => ({
+      text: s.text,
+      offset: s.start,
+      duration: s.duration,
+    }));
+
+    return res.status(200).json({ transcript: snippets });
   } catch (e) {
-    return res.status(500).json({ error: "Transcript not found" });
+    return res.status(500).json({
+      error: "Failed to fetch transcript",
+      details: e?.message || String(e),
+    });
   }
 }
