@@ -1,4 +1,4 @@
-import { YouTubeTranscriptApi } from "yt-transcript-api";
+import { YouTubeTranscriptApi, GenericProxyConfig } from "yt-transcript-api";
 
 // --- Simple in-memory rate limiter ---
 // Note: This works within a single serverless instance. Each cold start
@@ -74,7 +74,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    const api = new YouTubeTranscriptApi();
+    // Use a proxy if configured (required for cloud deployments like Vercel
+    // because YouTube blocks datacenter IPs)
+    const apiOptions = {};
+    if (process.env.PROXY_URL) {
+      apiOptions.proxy = new GenericProxyConfig(process.env.PROXY_URL);
+    }
+
+    const api = new YouTubeTranscriptApi(apiOptions);
     const transcript = await api.fetch(videoId, ["en"]);
 
     // Extract the snippet objects from the transcript
