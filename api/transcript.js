@@ -75,36 +75,43 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Invalid videoId format" });
   }
 
+  // Build the HTTP client with browser-like headers
+  const clientConfig = {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "Accept-Language": "en-US,en;q=0.9",
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    },
+    timeout: 25000,
+  };
+
+  let proxyAgent = null;
+  if (process.env.PROXY_URL) {
+    proxyAgent = new HttpsProxyAgent(process.env.PROXY_URL);
+    clientConfig.httpAgent = proxyAgent;
+    clientConfig.httpsAgent = proxyAgent;
+  }
+
+  const httpClient = axios.create(clientConfig);
+
+  // Step 1: Check the outgoing IP so we can include it in debug info
+  let outgoingIp = "unknown";
   try {
-    // Use a proxy if configured (required for cloud deployments like Vercel
-    // because YouTube blocks datacenter IPs).
-    // We pass a custom axios httpClient with the proxy agent because the
-    // package's built-in proxy support is not fully implemented.
-    const apiOptions = {};
-    const clientConfig = {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-      },
-      timeout: 25000,
-    };
+    const ipCheck = await httpClient.get("https://api.ipify.org?format=json", {
+      timeout: 5000,
+    });
+    outgoingIp = ipCheck.data.ip;
+  } catch {
+    outgoingIp = "failed to detect";
+  }
 
-    if (process.env.PROXY_URL) {
-      const agent = new HttpsProxyAgent(process.env.PROXY_URL);
-      clientConfig.httpAgent = agent;
-      clientConfig.httpsAgent = agent;
-    }
-
-    apiOptions.httpClient = axios.create(clientConfig);
-
-    const api = new YouTubeTranscriptApi(apiOptions);
+  // Step 2: Attempt to fetch the transcript
+  try {
+    const api = new YouTubeTranscriptApi({ httpClient });
     const transcript = await api.fetch(videoId, ["en"]);
 
-    // FetchedTranscript extends Array — each element is a snippet
-    // with { text, start, duration }
     const snippets = transcript.map((s) => ({
       text: s.text,
       start: s.start,
@@ -113,9 +120,23 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ transcript: snippets });
   } catch (e) {
-    return res.status(500).json({
+    const debug = {
       error: "Failed to fetch transcript",
-      details: e?.message || String(e),
-    });
+      outgoingIp,
+      proxyConfigured: !!process.env.PROXY_URL,
+      errorName: e?.name || "Unknown",
+      errorMessage: e?.message || String(e),
+      // Axios-specific error details
+      httpStatus: e?.response?.status || null,
+      httpStatusText: e?.response?.statusText || null,
+      responseUrl: e?.config?.url || null,
+      responseBody:
+        typeof e?.response?.data === "string"
+          ? e.response.data.slice(0, 1000)
+          : e?.response?.data || null,
+      responseHeaders: e?.response?.headers || null,
+    };
+
+    return res.status(500).json(debug);
   }
 }
