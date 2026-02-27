@@ -81,13 +81,24 @@ export default async function handler(req, res) {
     // We pass a custom axios httpClient with the proxy agent because the
     // package's built-in proxy support is not fully implemented.
     const apiOptions = {};
+    const clientConfig = {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+      },
+      timeout: 25000,
+    };
+
     if (process.env.PROXY_URL) {
       const agent = new HttpsProxyAgent(process.env.PROXY_URL);
-      apiOptions.httpClient = axios.create({
-        httpAgent: agent,
-        httpsAgent: agent,
-      });
+      clientConfig.httpAgent = agent;
+      clientConfig.httpsAgent = agent;
     }
+
+    apiOptions.httpClient = axios.create(clientConfig);
 
     const api = new YouTubeTranscriptApi(apiOptions);
     const transcript = await api.fetch(videoId, ["en"]);
