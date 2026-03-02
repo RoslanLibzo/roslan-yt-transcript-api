@@ -75,68 +75,67 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Invalid videoId format" });
   }
 
-  // Build the HTTP client with browser-like headers
-  const clientConfig = {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      "Accept-Language": "en-US,en;q=0.9",
-      Accept:
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    },
-    timeout: 25000,
-  };
+  // Vercel Hobby plan has a 60-second function limit.
+  // 5 retries with 8s delays + 10s request timeouts fits within that budget.
+  // Proxy errors (502/429) typically fail fast (~1-2s), so in practice
+  // this completes well under 60s.
+  const MAX_RETRIES = 5;
+  const RETRY_DELAY_MS = 8_000;
+  let lastError = null;
+  const attemptErrors = [];
 
-  let proxyAgent = null;
-  if (process.env.PROXY_URL) {
-    proxyAgent = new HttpsProxyAgent(process.env.PROXY_URL);
-    clientConfig.httpAgent = proxyAgent;
-    clientConfig.httpsAgent = proxyAgent;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const clientConfig = {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          "Accept-Language": "en-US,en;q=0.9",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        },
+        timeout: 10000,
+      };
+
+      if (process.env.PROXY_URL) {
+        const agent = new HttpsProxyAgent(process.env.PROXY_URL);
+        clientConfig.httpAgent = agent;
+        clientConfig.httpsAgent = agent;
+      }
+
+      const httpClient = axios.create(clientConfig);
+      const api = new YouTubeTranscriptApi({ httpClient });
+      const transcript = await api.fetch(videoId, ["en"]);
+
+      const snippets = transcript.map((s) => ({
+        text: s.text,
+        start: s.start,
+        duration: s.duration,
+      }));
+
+      return res.status(200).json({ transcript: snippets });
+    } catch (e) {
+      lastError = e;
+      const status = e?.response?.status;
+      attemptErrors.push({
+        attempt,
+        status: status || null,
+        message: e?.message || String(e),
+      });
+
+      // Only retry on transient proxy/rate-limit errors
+      if ((status === 429 || status === 502 || status === 503) && attempt < MAX_RETRIES) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+
+      break;
+    }
   }
 
-  const httpClient = axios.create(clientConfig);
-
-  // Step 1: Check the outgoing IP so we can include it in debug info
-  let outgoingIp = "unknown";
-  try {
-    const ipCheck = await httpClient.get("https://api.ipify.org?format=json", {
-      timeout: 5000,
-    });
-    outgoingIp = ipCheck.data.ip;
-  } catch {
-    outgoingIp = "failed to detect";
-  }
-
-  // Step 2: Attempt to fetch the transcript
-  try {
-    const api = new YouTubeTranscriptApi({ httpClient });
-    const transcript = await api.fetch(videoId, ["en"]);
-
-    const snippets = transcript.map((s) => ({
-      text: s.text,
-      start: s.start,
-      duration: s.duration,
-    }));
-
-    return res.status(200).json({ transcript: snippets });
-  } catch (e) {
-    const debug = {
-      error: "Failed to fetch transcript",
-      outgoingIp,
-      proxyConfigured: !!process.env.PROXY_URL,
-      errorName: e?.name || "Unknown",
-      errorMessage: e?.message || String(e),
-      // Axios-specific error details
-      httpStatus: e?.response?.status || null,
-      httpStatusText: e?.response?.statusText || null,
-      responseUrl: e?.config?.url || null,
-      responseBody:
-        typeof e?.response?.data === "string"
-          ? e.response.data.slice(0, 1000)
-          : e?.response?.data || null,
-      responseHeaders: e?.response?.headers || null,
-    };
-
-    return res.status(500).json(debug);
-  }
+  return res.status(500).json({
+    error: `Failed to fetch transcript after ${attemptErrors.length} of ${MAX_RETRIES} retries`,
+    details: lastError?.message || String(lastError),
+    attempts: attemptErrors,
+  });
 }
