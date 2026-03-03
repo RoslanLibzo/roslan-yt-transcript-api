@@ -117,19 +117,28 @@ export default async function handler(req, res) {
     } catch (e) {
       lastError = e;
       const status = e?.response?.status;
+      const msg = (e?.message || "").toLowerCase();
       attemptErrors.push({
         attempt,
         status: status || null,
         message: e?.message || String(e),
       });
 
-      // Only retry on transient proxy/rate-limit errors
-      if ((status === 429 || status === 502 || status === 503) && attempt < MAX_RETRIES) {
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-        continue;
+      // Errors that won't change with a different proxy IP — don't retry
+      const permanent =
+        msg.includes("transcript") && msg.includes("disabled") ||
+        msg.includes("video unavailable") ||
+        msg.includes("invalid video") ||
+        msg.includes("no transcript found") ||
+        msg.includes("age restricted");
+
+      if (permanent || attempt >= MAX_RETRIES) {
+        break;
       }
 
-      break;
+      // Retry on everything else: HTTP 429/502/503, IP blocks,
+      // proxy gateway errors, timeouts, etc.
+      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
     }
   }
 
